@@ -229,10 +229,11 @@ class BDFFileFormat(FileFormatPlugin):
 			elif line.startswith("FOUNDRY "):
 				font.manufacturer = line[8:-1].strip("\" ")
 			elif line.startswith("WEIGHT_NAME "):
-				instance = font.instances[0]
-				if instance is None:
+				if len(font.instances) == 0:
 					instance = GSInstance()
 					font.instances.append(instance)
+				else:
+					instance = font.instances[0]
 				instance.name = line[12:-1].strip("\" ")
 			elif line.startswith("COPYRIGHT "):
 				font.copyright = line[10:-1].strip("\" ")
@@ -275,15 +276,17 @@ class BDFFileFormat(FileFormatPlugin):
 
 	@objc.python_method
 	def readBitmap(self, layer, originX, originY, width, height, file):
+		if width <= 0 or height <= 0:
+			return
+
 		row = 0
-		columns = math.ceil(width / 8.0)
-		highesBit = 0x80
-		if columns > 1:
-			highesBit = highesBit << 8
-		if columns > 2:
-			highesBit = highesBit << 8
+		columns = int(math.ceil(width / 8.0))
+		highesBit = 1 << (columns * 8 - 1)
 		layer.setDisableUpdates()
 		for line in file:
+			line = line.strip()
+			if not line:
+				continue
 			bit = int(line, 16)
 			for column in range(width):
 				if (bit & highesBit) == highesBit:
