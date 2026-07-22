@@ -20,7 +20,7 @@ from GlyphsApp import *
 from GlyphsApp.plugins import *
 from GlyphsApp.plugins import pathForResource
 import os, traceback, math, objc
-from CoreFoundation import CFSTR, CFStringCompare, CFRelease
+from CoreFoundation import CFSTR, CFStringCompare
 from LaunchServices import LSCopyDefaultRoleHandlerForContentType, LSSetDefaultRoleHandlerForContentType, kLSRolesEditor
 
 class BDFFileFormat(FileFormatPlugin):
@@ -55,9 +55,6 @@ class BDFFileFormat(FileFormatPlugin):
 		identifier = NSBundle.mainBundle().bundleIdentifier()
 		if not handler or CFStringCompare(handler, CFSTR(identifier), 0):
 			LSSetDefaultRoleHandlerForContentType(CFSTR("org.x.bdf"), kLSRolesEditor, CFSTR(identifier))
-
-		if handler:
-			CFRelease(handler)
 
 	@objc.python_method
 	def export(self, font, filepath = None):
