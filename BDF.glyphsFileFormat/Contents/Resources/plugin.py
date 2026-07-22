@@ -23,6 +23,8 @@ import os, traceback, math, objc
 from CoreFoundation import CFSTR, CFStringCompare
 from LaunchServices import LSCopyDefaultRoleHandlerForContentType, LSSetDefaultRoleHandlerForContentType, kLSRolesEditor
 
+UNITS_PER_PIXEL = 100
+
 class BDFFileFormat(FileFormatPlugin):
 
 	# Definitions of IBOutlets
@@ -77,7 +79,7 @@ class BDFFileFormat(FileFormatPlugin):
 
 	@objc.python_method
 	def preExport(self, font):
-		self.factor = font.grid
+		self.factor = UNITS_PER_PIXEL
 		self.size = round(font.upm / self.factor)
 		master = font.masters[0]
 		self.ascender = round(master.ascender / self.factor)
@@ -167,7 +169,7 @@ class BDFFileFormat(FileFormatPlugin):
 		if glyph.unicode and len(glyph.unicode) >=4:
 			enc = int(glyph.unicode, 16)
 			f.write("ENCODING %d\n" % enc)
-		f.write("SWIDTH %d 0\n" % ((75 / self.resolution) * 100.0 * layer.width / self.size))
+		f.write("SWIDTH %d 0\n" % ((75 / self.resolution) * 1000.0 * layer.width / (self.factor * self.size)))
 		f.write("DWIDTH %d 0\n" % round(layer.width / self.factor))
 
 		minX = 10000
@@ -205,8 +207,8 @@ class BDFFileFormat(FileFormatPlugin):
 			elif line.startswith("SIZE "):
 				size = line.split(" ")
 				self.size = int(size[1])
-				font.upm = self.size * 10
-				font.grid = 10
+				font.upm = self.size * UNITS_PER_PIXEL
+				font.grid = UNITS_PER_PIXEL
 
 				resultion = int(size[2])
 				if resultion != 75:
@@ -215,13 +217,13 @@ class BDFFileFormat(FileFormatPlugin):
 			elif line.startswith("FONT_ASCENT "):
 				self.ascender = int(line.split(" ")[1])
 				master = font.masters[0]
-				master.ascender = self.ascender * 10
-				master.capHeight = (self.ascender - 1) * 10
-				master.xHeight = round(self.ascender * 0.66) * 10
+				master.ascender = self.ascender * UNITS_PER_PIXEL
+				master.capHeight = (self.ascender - 1) * UNITS_PER_PIXEL
+				master.xHeight = round(self.ascender * 0.66) * UNITS_PER_PIXEL
 			elif line.startswith("FONT_DESCENT "):
 				self.descender = int(line.split(" ")[1])
 				master = font.masters[0]
-				master.descender = - self.descender * 10
+				master.descender = - self.descender * UNITS_PER_PIXEL
 			elif line.startswith("FAMILY_NAME "):
 				if font.familyName != "new Font":
 					font.customParameters["postscriptFontName"] = font.familyName
@@ -247,10 +249,10 @@ class BDFFileFormat(FileFormatPlugin):
 					pass
 			elif line.startswith("UNDERLINE_POSITION "):
 				master = font.masters[0]
-				master.customParameters["underlinePosition"] = int(line[19:-1]) * 10
+				master.customParameters["underlinePosition"] = int(line[19:-1]) * UNITS_PER_PIXEL
 			elif line.startswith("UNDERLINE_THICKNESS "):
 				master = font.masters[0]
-				master.customParameters["underlineThickness"] = int(line[20:-1]) * 10
+				master.customParameters["underlineThickness"] = int(line[20:-1]) * UNITS_PER_PIXEL
 
 	@objc.python_method
 	def drawPixel(self, font):
@@ -259,14 +261,14 @@ class BDFFileFormat(FileFormatPlugin):
 		pixel.export = False
 		font.glyphs.append(pixel)
 		layer = pixel.layers[0]
-		layer.width = 10
+		layer.width = UNITS_PER_PIXEL
 		path = GSPath()
 
-		Node = GSNode(NSPoint(10, 0), LINE)
+		Node = GSNode(NSPoint(UNITS_PER_PIXEL, 0), LINE)
 		path.nodes.append(Node)
-		Node = GSNode(NSPoint(10, 10), LINE)
+		Node = GSNode(NSPoint(UNITS_PER_PIXEL, UNITS_PER_PIXEL), LINE)
 		path.nodes.append(Node)
-		Node = GSNode(NSPoint(0, 10), LINE)
+		Node = GSNode(NSPoint(0, UNITS_PER_PIXEL), LINE)
 		path.nodes.append(Node)
 		Node = GSNode(NSPoint(0, 0), LINE)
 		path.nodes.append(Node)
@@ -291,7 +293,7 @@ class BDFFileFormat(FileFormatPlugin):
 			for column in range(width):
 				if (bit & highesBit) == highesBit:
 					pixel = GSComponent("pixel")
-					pixel.position = NSPoint((originX + column) * 10, (height - row + originY - 1) * 10)
+					pixel.position = NSPoint((originX + column) * UNITS_PER_PIXEL, (height - row + originY - 1) * UNITS_PER_PIXEL)
 					pixel.automaticAlignment = False
 					layer.components.append(pixel)
 				bit = bit << 1
@@ -317,7 +319,7 @@ class BDFFileFormat(FileFormatPlugin):
 				glyph.unicode = uni
 			elif line.startswith("DWIDTH"):
 				width = int(line.split(" ")[1])
-				layer.width = width * 10
+				layer.width = width * UNITS_PER_PIXEL
 			elif line.startswith("BBX"):
 				elements = line.split(" ")
 				originX = int(elements[3])

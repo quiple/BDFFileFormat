@@ -12,9 +12,8 @@ If you cannot use the Plugin Manager, follow these steps:
 3. Restart Glyphs.
 
 ### Usage
-The plugin assumes a few things. It uses 10 units per pixes. So if you what to draw a font with 16 px, set the UPM to 160 and ascender to 140 or 130 and descender to -20 or -30. And set the grid to 10.
+The plugin uses 100 font units per pixel. For example, for a 16 px font, set the UPM to 1600, the ascender to 1400 or 1300, the descender to -200 or -300, and the grid to 100.
 
-Then add a glyph called `pixel` and draw a 10 by 10 square at the origin. It should look like this:
+Then add a glyph called `pixel` and draw a 100 by 100 square at the origin. It should look like this:
 ![Pixel](pixel.png)
-
 
