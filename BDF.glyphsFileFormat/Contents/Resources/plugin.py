@@ -27,46 +27,42 @@ UNITS_PER_PIXEL = 100
 TRANSFORM_TOLERANCE = 0.01
 
 
-def composeTransforms(outer, inner):
-	"""Return the affine transform outer(inner(point))."""
-	oa, ob, oc, od, ox, oy = outer
-	ia, ib, ic, id, ix, iy = inner
-	return (
-		oa * ia + oc * ib,
-		ob * ia + od * ib,
-		oa * ic + oc * id,
-		ob * ic + od * id,
-		oa * ix + oc * iy + ox,
-		ob * ix + od * iy + oy,
-	)
-
-
-def transformPoint(transform, x, y):
-	a, b, c, d, tx, ty = transform
-	return a * x + c * y + tx, b * x + d * y + ty
-
-
 def pixelOrigin(transform, factor, glyphName):
 	"""Return the grid cell covered by a transformed pixel component."""
-	corners = (
-		transformPoint(transform, 0, 0),
-		transformPoint(transform, factor, 0),
-		transformPoint(transform, 0, factor),
-		transformPoint(transform, factor, factor),
-	)
-	minX = min(point[0] for point in corners)
-	minY = min(point[1] for point in corners)
-	maxX = max(point[0] for point in corners)
-	maxY = max(point[1] for point in corners)
-
-	if abs(maxX - minX - factor) > TRANSFORM_TOLERANCE or abs(maxY - minY - factor) > TRANSFORM_TOLERANCE:
-		raise ValueError("%s contains a scaled or skewed pixel component" % glyphName)
-
-	gridX = minX / factor
-	gridY = minY / factor
-	if abs(gridX - round(gridX)) > TRANSFORM_TOLERANCE or abs(gridY - round(gridY)) > TRANSFORM_TOLERANCE:
+	a, b, c, d, tx, ty = transform
+	if a == 1 and b == 0 and c == 0 and d == 1:
+		gridX = tx / factor
+		gridY = ty / factor
+	else:
+		width = factor * (abs(a) + abs(c))
+		height = factor * (abs(b) + abs(d))
+		if abs(width - factor) > TRANSFORM_TOLERANCE or abs(height - factor) > TRANSFORM_TOLERANCE:
+			raise ValueError("%s contains a scaled or skewed pixel component" % glyphName)
+		gridX = tx / factor + min(0, a) + min(0, c)
+		gridY = ty / factor + min(0, b) + min(0, d)
+	roundedX = round(gridX)
+	roundedY = round(gridY)
+	if abs(gridX - roundedX) > TRANSFORM_TOLERANCE or abs(gridY - roundedY) > TRANSFORM_TOLERANCE:
 		raise ValueError("%s contains a pixel component outside the pixel grid" % glyphName)
-	return int(round(gridX)), int(round(gridY))
+	return int(roundedX), int(roundedY)
+
+
+def pixelBounds(pixels):
+	"""Return BDF bounds for a non-empty collection of pixel coordinates."""
+	iterator = iter(pixels)
+	firstX, firstY = next(iterator)
+	minX = maxX = firstX
+	minY = maxY = firstY
+	for x, y in iterator:
+		if x < minX:
+			minX = x
+		elif x > maxX:
+			maxX = x
+		if y < minY:
+			minY = y
+		elif y > maxY:
+			maxY = y
+	return minX, minY, maxX - minX + 1, maxY - minY + 1
 
 class BDFFileFormat(FileFormatPlugin):
 
@@ -130,9 +126,13 @@ class BDFFileFormat(FileFormatPlugin):
 		master = font.masters[0]
 		self.ascender = round(master.ascender / self.factor)
 		self.descender = round(master.descender / self.factor)
-		self.pixelTransformCache = {}
-		self.pixelTransformStack = set()
-		self.glyphPixels = {}
+		self.masterId = master.id
+		self.pixelGlyph = font.glyphs[self.pixel]
+		if self.pixelGlyph is None:
+			raise ValueError("Missing pixel glyph: %s" % self.pixel)
+		self.pixelCache = {}
+		self.pixelStack = set()
+		self.glyphData = {}
 
 		minX = 0
 		minY = self.descender
@@ -142,14 +142,18 @@ class BDFFileFormat(FileFormatPlugin):
 		for g in font.glyphs:
 			if not g.export:
 				continue
-			layer = g.layers[master.id]
+			layer = g.layers[self.masterId]
 			pixels = self.pixelsForLayer(layer)
-			self.glyphPixels[g.name] = pixels
 			if pixels:
-				minX = min(minX, min(pixel[0] for pixel in pixels))
-				minY = min(minY, min(pixel[1] for pixel in pixels))
-				maxX = max(maxX, max(pixel[0] for pixel in pixels) + 1)
-				maxY = max(maxY, max(pixel[1] for pixel in pixels) + 1)
+				bounds = pixelBounds(pixels)
+				originX, originY, width, height = bounds
+				minX = min(minX, originX)
+				minY = min(minY, originY)
+				maxX = max(maxX, originX + width)
+				maxY = max(maxY, originY + height)
+			else:
+				bounds = (0, 0, 0, 0)
+			self.glyphData[g.name] = (pixels, bounds)
 			gcount += 1
 
 		self.originX = minX
@@ -174,66 +178,67 @@ class BDFFileFormat(FileFormatPlugin):
 		f.write("ENDPROPERTIES\n")
 
 	@objc.python_method
-	def pixelTransformsForLayer(self, layer):
-		key = (layer.parent.name, layer.layerId)
-		if key in self.pixelTransformCache:
-			return self.pixelTransformCache[key]
-		if key in self.pixelTransformStack:
-			raise ValueError("Component cycle found at %s" % layer.parent.name)
+	def pixelsForLayer(self, layer):
+		glyphName = layer.parent.name
+		key = (glyphName, layer.layerId)
+		if key in self.pixelCache:
+			return self.pixelCache[key]
+		if key in self.pixelStack:
+			raise ValueError("Component cycle found at %s" % glyphName)
 
-		self.pixelTransformStack.add(key)
-		transforms = []
+		self.pixelStack.add(key)
+		pixels = set()
 		try:
 			for component in layer.components:
-				componentTransform = tuple(component.transform)
-				if component.componentName == self.pixel:
-					transforms.append(componentTransform)
+				componentTransform = component.transform
+				if component.componentFast() is self.pixelGlyph:
+					pixels.add(pixelOrigin(componentTransform, self.factor, glyphName))
 					continue
 
 				componentLayer = component.componentLayer
 				if componentLayer is None:
 					raise ValueError(
-						"%s contains a missing component: %s" % (layer.parent.name, component.componentName)
+						"%s contains a missing component: %s" % (glyphName, component.componentName)
 					)
-				for childTransform in self.pixelTransformsForLayer(componentLayer):
-					transforms.append(composeTransforms(componentTransform, childTransform))
+				childPixels = self.pixelsForLayer(componentLayer)
+				a, b, c, d, tx, ty = componentTransform
+				if abs(a - 1) <= TRANSFORM_TOLERANCE and abs(b) <= TRANSFORM_TOLERANCE and abs(c) <= TRANSFORM_TOLERANCE and abs(d - 1) <= TRANSFORM_TOLERANCE:
+					offsetX, offsetY = pixelOrigin(componentTransform, self.factor, glyphName)
+					if offsetX == 0 and offsetY == 0:
+						pixels.update(childPixels)
+					else:
+						pixels.update((x + offsetX, y + offsetY) for x, y in childPixels)
+				else:
+					for x, y in childPixels:
+						transformedPixel = (
+							a, b, c, d,
+							a * x * self.factor + c * y * self.factor + tx,
+							b * x * self.factor + d * y * self.factor + ty,
+						)
+						pixels.add(pixelOrigin(transformedPixel, self.factor, glyphName))
 		finally:
-			self.pixelTransformStack.remove(key)
+			self.pixelStack.remove(key)
 
-		self.pixelTransformCache[key] = tuple(transforms)
-		return self.pixelTransformCache[key]
-
-	@objc.python_method
-	def pixelsForLayer(self, layer):
-		return set(
-			pixelOrigin(transform, self.factor, layer.parent.name)
-			for transform in self.pixelTransformsForLayer(layer)
-		)
+		self.pixelCache[key] = frozenset(pixels)
+		return self.pixelCache[key]
 
 	@objc.python_method
 	def writeBitmap(self, pixelsForGlyph, originX, originY, width, height, f):
-		pixels = list()
-		columns = int(math.ceil(width / 8.0) * 8)
-		for y in range(height):
-			row = list()
-			for x in range(columns):
-				row.append(False)
-			pixels.append(row)
+		columns = ((width + 7) // 8) * 8
+		rows = [0] * height
 		for x, y in pixelsForGlyph:
 			row = height - (y - originY) - 1
 			column = x - originX
-			pixels[row][column] = True
+			rows[row] |= 1 << (columns - column - 1)
 		f.write("BITMAP\n")
-		for row in pixels:
-			bits = 0
-			for column in row:
-				bits = (bits << 1) | int(column)
-			f.write(("%0" + str(columns // 4) + "X\n") % bits)
+		rowFormat = "%0" + str(columns // 4) + "X\n"
+		for row in rows:
+			f.write(rowFormat % row)
 
 	@objc.python_method
 	def writeGlyph(self, glyph, f):
-		layer = glyph.layers[glyph.parent.masters[0].id]
-		pixels = self.glyphPixels[glyph.name]
+		layer = glyph.layers[self.masterId]
+		pixels, bounds = self.glyphData[glyph.name]
 
 		f.write("STARTCHAR %s\n" % glyph.name)
 		if glyph.unicode and len(glyph.unicode) >=4:
@@ -242,16 +247,7 @@ class BDFFileFormat(FileFormatPlugin):
 		f.write("SWIDTH %d 0\n" % ((75 / self.resolution) * 1000.0 * layer.width / (self.factor * self.size)))
 		f.write("DWIDTH %d 0\n" % round(layer.width / self.factor))
 
-		if pixels:
-			originX = min(pixel[0] for pixel in pixels)
-			originY = min(pixel[1] for pixel in pixels)
-			width = max(pixel[0] for pixel in pixels) - originX + 1
-			height = max(pixel[1] for pixel in pixels) - originY + 1
-		else:
-			originX = 0
-			originY = 0
-			width = 0
-			height = 0
+		originX, originY, width, height = bounds
 		f.write("BBX %d %d %d %d\n" % (width, height, originX, originY))
 		self.writeBitmap(pixels, originX, originY, width, height, f)
 		f.write("ENDCHAR\n")
