@@ -17,3 +17,4 @@ The plugin uses 100 font units per pixel. For example, for a 16 px font, set the
 Then add a glyph called `pixel` and draw a 100 by 100 square at the origin. It should look like this:
 ![Pixel](pixel.png)
 
+The exporter resolves nested components and applies component transforms. Pixel components may be translated, rotated in 90-degree increments, or mirrored as long as the resulting 100 by 100 square stays aligned to the pixel grid.

@@ -24,6 +24,49 @@ from CoreFoundation import CFSTR, CFStringCompare
 from LaunchServices import LSCopyDefaultRoleHandlerForContentType, LSSetDefaultRoleHandlerForContentType, kLSRolesEditor
 
 UNITS_PER_PIXEL = 100
+TRANSFORM_TOLERANCE = 0.01
+
+
+def composeTransforms(outer, inner):
+	"""Return the affine transform outer(inner(point))."""
+	oa, ob, oc, od, ox, oy = outer
+	ia, ib, ic, id, ix, iy = inner
+	return (
+		oa * ia + oc * ib,
+		ob * ia + od * ib,
+		oa * ic + oc * id,
+		ob * ic + od * id,
+		oa * ix + oc * iy + ox,
+		ob * ix + od * iy + oy,
+	)
+
+
+def transformPoint(transform, x, y):
+	a, b, c, d, tx, ty = transform
+	return a * x + c * y + tx, b * x + d * y + ty
+
+
+def pixelOrigin(transform, factor, glyphName):
+	"""Return the grid cell covered by a transformed pixel component."""
+	corners = (
+		transformPoint(transform, 0, 0),
+		transformPoint(transform, factor, 0),
+		transformPoint(transform, 0, factor),
+		transformPoint(transform, factor, factor),
+	)
+	minX = min(point[0] for point in corners)
+	minY = min(point[1] for point in corners)
+	maxX = max(point[0] for point in corners)
+	maxY = max(point[1] for point in corners)
+
+	if abs(maxX - minX - factor) > TRANSFORM_TOLERANCE or abs(maxY - minY - factor) > TRANSFORM_TOLERANCE:
+		raise ValueError("%s contains a scaled or skewed pixel component" % glyphName)
+
+	gridX = minX / factor
+	gridY = minY / factor
+	if abs(gridX - round(gridX)) > TRANSFORM_TOLERANCE or abs(gridY - round(gridY)) > TRANSFORM_TOLERANCE:
+		raise ValueError("%s contains a pixel component outside the pixel grid" % glyphName)
+	return int(round(gridX)), int(round(gridY))
 
 class BDFFileFormat(FileFormatPlugin):
 
@@ -80,10 +123,16 @@ class BDFFileFormat(FileFormatPlugin):
 	@objc.python_method
 	def preExport(self, font):
 		self.factor = UNITS_PER_PIXEL
+		self.pixel = "pixel"
+		if "BDFpixel" in font.customParameters:
+			self.pixel = font.customParameters["BDFpixel"]
 		self.size = round(font.upm / self.factor)
 		master = font.masters[0]
 		self.ascender = round(master.ascender / self.factor)
 		self.descender = round(master.descender / self.factor)
+		self.pixelTransformCache = {}
+		self.pixelTransformStack = set()
+		self.glyphPixels = {}
 
 		minX = 0
 		minY = self.descender
@@ -93,12 +142,14 @@ class BDFFileFormat(FileFormatPlugin):
 		for g in font.glyphs:
 			if not g.export:
 				continue
-			l = g.layers[0]
-			bounds = l.bounds
-			minX = min(minX, NSMinX(bounds) / self.factor)
-			minY = min(minY, NSMinY(bounds) / self.factor)
-			maxX = max(maxX, NSMaxX(bounds) / self.factor)
-			maxY = max(maxY, NSMaxY(bounds) / self.factor)
+			layer = g.layers[master.id]
+			pixels = self.pixelsForLayer(layer)
+			self.glyphPixels[g.name] = pixels
+			if pixels:
+				minX = min(minX, min(pixel[0] for pixel in pixels))
+				minY = min(minY, min(pixel[1] for pixel in pixels))
+				maxX = max(maxX, max(pixel[0] for pixel in pixels) + 1)
+				maxY = max(maxY, max(pixel[1] for pixel in pixels) + 1)
 			gcount += 1
 
 		self.originX = minX
@@ -113,10 +164,6 @@ class BDFFileFormat(FileFormatPlugin):
 		self.resolution = 75
 		if "BDFresultion" in font.customParameters:
 			self.resolution = int(font.customParameters["BDFresultion"])
-		self.pixel = "pixel"
-		if "BDFpixel" in font.customParameters:
-			self.pixel = font.customParameters["BDFpixel"]
-
 		f.write("STARTFONT 2.1\n")
 		f.write("FONT %s\n" % font.familyName)
 		f.write("SIZE %d %d %d\n" % (self.size, self.resolution, self.resolution))
@@ -127,7 +174,44 @@ class BDFFileFormat(FileFormatPlugin):
 		f.write("ENDPROPERTIES\n")
 
 	@objc.python_method
-	def writeBitmap(self, layer, originX, originY, width, height, f):
+	def pixelTransformsForLayer(self, layer):
+		key = (layer.parent.name, layer.layerId)
+		if key in self.pixelTransformCache:
+			return self.pixelTransformCache[key]
+		if key in self.pixelTransformStack:
+			raise ValueError("Component cycle found at %s" % layer.parent.name)
+
+		self.pixelTransformStack.add(key)
+		transforms = []
+		try:
+			for component in layer.components:
+				componentTransform = tuple(component.transform)
+				if component.componentName == self.pixel:
+					transforms.append(componentTransform)
+					continue
+
+				componentLayer = component.componentLayer
+				if componentLayer is None:
+					raise ValueError(
+						"%s contains a missing component: %s" % (layer.parent.name, component.componentName)
+					)
+				for childTransform in self.pixelTransformsForLayer(componentLayer):
+					transforms.append(composeTransforms(componentTransform, childTransform))
+		finally:
+			self.pixelTransformStack.remove(key)
+
+		self.pixelTransformCache[key] = tuple(transforms)
+		return self.pixelTransformCache[key]
+
+	@objc.python_method
+	def pixelsForLayer(self, layer):
+		return set(
+			pixelOrigin(transform, self.factor, layer.parent.name)
+			for transform in self.pixelTransformsForLayer(layer)
+		)
+
+	@objc.python_method
+	def writeBitmap(self, pixelsForGlyph, originX, originY, width, height, f):
 		pixels = list()
 		columns = int(math.ceil(width / 8.0) * 8)
 		for y in range(height):
@@ -135,35 +219,21 @@ class BDFFileFormat(FileFormatPlugin):
 			for x in range(columns):
 				row.append(False)
 			pixels.append(row)
-		for c in layer.components:
-			if c.componentName == self.pixel:
-				pos = c.position
-				row = int(height - round(pos.y / self.factor) + originY) - 1
-				column = int(round(pos.x / self.factor) - originX)
-				pixels[row][column] = True
+		for x, y in pixelsForGlyph:
+			row = height - (y - originY) - 1
+			column = x - originX
+			pixels[row][column] = True
 		f.write("BITMAP\n")
 		for row in pixels:
-			pin = 1
 			bits = 0
 			for column in row:
-				if column:
-					bits = bits | pin
-				bits = bits << 1
-			bits = bits >> 1
-			if columns > 48:
-				f.write("%010X\n" % bits)
-			if columns > 32:
-				f.write("%08X\n" % bits)
-			elif columns > 16:
-				f.write("%06X\n" % bits)
-			elif columns > 8:
-				f.write("%04X\n" % bits)
-			else:
-				f.write("%02X\n" % bits)
+				bits = (bits << 1) | int(column)
+			f.write(("%0" + str(columns // 4) + "X\n") % bits)
 
 	@objc.python_method
 	def writeGlyph(self, glyph, f):
-		layer = glyph.layers[0]
+		layer = glyph.layers[glyph.parent.masters[0].id]
+		pixels = self.glyphPixels[glyph.name]
 
 		f.write("STARTCHAR %s\n" % glyph.name)
 		if glyph.unicode and len(glyph.unicode) >=4:
@@ -172,21 +242,18 @@ class BDFFileFormat(FileFormatPlugin):
 		f.write("SWIDTH %d 0\n" % ((75 / self.resolution) * 1000.0 * layer.width / (self.factor * self.size)))
 		f.write("DWIDTH %d 0\n" % round(layer.width / self.factor))
 
-		minX = 10000
-		minY = 10000
-		maxX = 0
-		maxY = 0
-		bounds = layer.bounds
-		minX = min(minX, NSMinX(bounds) / self.factor)
-		minY = min(minY, NSMinY(bounds) / self.factor)
-		maxX = max(maxX, NSMaxX(bounds) / self.factor)
-		maxY = max(maxY, NSMaxY(bounds) / self.factor)
-		originX = int(minX)
-		originY = int(minY)
-		width = int(maxX - minX)
-		height = int(maxY - minY)
+		if pixels:
+			originX = min(pixel[0] for pixel in pixels)
+			originY = min(pixel[1] for pixel in pixels)
+			width = max(pixel[0] for pixel in pixels) - originX + 1
+			height = max(pixel[1] for pixel in pixels) - originY + 1
+		else:
+			originX = 0
+			originY = 0
+			width = 0
+			height = 0
 		f.write("BBX %d %d %d %d\n" % (width, height, originX, originY))
-		self.writeBitmap(layer, originX, originY, width, height, f)
+		self.writeBitmap(pixels, originX, originY, width, height, f)
 		f.write("ENDCHAR\n")
 
 	@objc.python_method
