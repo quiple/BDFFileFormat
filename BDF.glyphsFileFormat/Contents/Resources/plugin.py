@@ -241,9 +241,13 @@ class BDFFileFormat(FileFormatPlugin):
 		pixels, bounds = self.glyphData[glyph.name]
 
 		f.write("STARTCHAR %s\n" % glyph.name)
-		if glyph.unicode and len(glyph.unicode) >=4:
-			enc = int(glyph.unicode, 16)
-			f.write("ENCODING %d\n" % enc)
+		enc = -1
+		if glyph.unicode:
+			try:
+				enc = int(glyph.unicode, 16)
+			except (TypeError, ValueError):
+				pass
+		f.write("ENCODING %d\n" % enc)
 		f.write("SWIDTH %d 0\n" % ((75 / self.resolution) * 1000.0 * layer.width / (self.factor * self.size)))
 		f.write("DWIDTH %d 0\n" % round(layer.width / self.factor))
 
@@ -377,9 +381,10 @@ class BDFFileFormat(FileFormatPlugin):
 			if line.startswith("ENDCHAR"):
 				break
 			elif line.startswith("ENCODING"):
-				enc = int(line[9:-1])
-				uni = "%04X" % enc
-				glyph.unicode = uni
+				enc = int(line.split()[1])
+				if enc >= 0:
+					uni = "%04X" % enc
+					glyph.unicode = uni
 			elif line.startswith("DWIDTH"):
 				width = int(line.split(" ")[1])
 				layer.width = width * UNITS_PER_PIXEL
