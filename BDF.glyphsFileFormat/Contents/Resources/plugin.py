@@ -110,7 +110,7 @@ class BDFFileFormat(FileFormatPlugin):
 
 		self.preExport(font)
 
-		with open(filepath, "w") as f:
+		with open(filepath, "w", encoding="utf-8", newline="\n") as f:
 			self.writeFontInfo(font, f)
 			self.writeGlyphs(font, f)
 			f.write("ENDFONT")
@@ -429,7 +429,7 @@ class BDFFileFormat(FileFormatPlugin):
 	def read(self, filepath, fileType):
 		font = GSFont()
 		font.disableUpdateInterface()
-		with open(filepath) as f:
+		with open(filepath, encoding="utf-8-sig") as f:
 			self.readFontInfo(font, f)
 			self.readGlyphs(font, f)
 		font.enableUpdateInterface()
