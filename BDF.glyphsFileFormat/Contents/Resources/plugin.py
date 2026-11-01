@@ -20,6 +20,7 @@ from GlyphsApp import *
 from GlyphsApp.plugins import *
 from GlyphsApp.plugins import pathForResource
 import os, traceback, math, objc
+from Foundation import NSBundle, NSPoint
 from CoreFoundation import CFSTR, CFStringCompare
 from LaunchServices import LSCopyDefaultRoleHandlerForContentType, LSSetDefaultRoleHandlerForContentType, kLSRolesEditor
 
